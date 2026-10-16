@@ -100,6 +100,17 @@ jobs:
       - name: Verify CLI executable
         run: node packages/run-spaceapp/bin/spaceapp.mjs --version
 
+      - name: Validate rendered Podman Compose configuration with real provider
+        run: |
+          export SPACEAPP_HOME="$RUNNER_TEMP/spaceapp-podman-validate"
+          node --input-type=module -e '
+            import { prepareInstallation, writeRuntimeFiles } from "./packages/run-spaceapp/src/index.mjs";
+            const root = process.env.SPACEAPP_HOME;
+            const res = await prepareInstallation(root, { version: "0.2.5", profile: "small", engine: "podman", accessMode: "isolated" });
+            await writeRuntimeFiles(root, res.config);
+          '
+          podman compose -f "$SPACEAPP_HOME/compose.yml" -f "$SPACEAPP_HOME/compose.podman.yml" config
+
       - name: Run rootless Podman lifecycle verification
         run: |
           export SPACEAPP_HOME="$RUNNER_TEMP/spaceapp-podman-ci"

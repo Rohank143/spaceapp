@@ -416,7 +416,7 @@ export async function run(argv, {
   }
   if (command === "repair" || command === "doctor" && args.includes("--fix")) {
     if (args.some((arg) => !["--dry-run", "--fix"].includes(arg))) throw new Error("Usage: repair [--dry-run] or doctor --fix");
-    return repairRuntime({ root, config: null, platform, stdin, stdout, stderr, execute, request, sleep, ensureDocker, env, arch, inspectResources, dryRun: args.includes("--dry-run") });
+    return repairRuntime({ root, config: null, platform, stdin, stdout, stderr, execute, request, sleep, ensureDocker, ensurePodman, env, arch, inspectResources, dryRun: args.includes("--dry-run") });
   }
   const config = await loadConfig(root);
   if (commandNeedsRuntimeFiles(command, args)) {
@@ -456,7 +456,7 @@ export async function run(argv, {
   }
   if (command === "repair") {
     const dryRun = args.includes("--dry-run");
-    return repairRuntime({ root, config, platform, stdin, stdout, stderr, execute: runtimeExecute, request, sleep, dryRun });
+    return repairRuntime({ root, config, platform, stdin, stdout, stderr, execute: runtimeExecute, request, sleep, ensureDocker, ensurePodman, env, arch, dryRun });
   }
   if (command === "reinstall") {
     const keepData = !args.includes("--purge-data");
@@ -490,7 +490,7 @@ export async function run(argv, {
       execute: runtimeExecute,
       request,
       sleep,
-      inspectResources, ensureDocker, env, arch
+      inspectResources, ensureDocker, ensurePodman, env, arch
     });
   }
   if (command === "rollback") {
@@ -1091,9 +1091,10 @@ async function planInteractiveSetup({
 }) {
   const parsed = parseInstallArgs(args);
   const rawExisting = await readRawConfig(root);
-  if (rawExisting && parsed.requestedEngine && rawExisting.engine && parsed.requestedEngine !== rawExisting.engine) {
+  const existingEngine = rawExisting?.engine ?? "docker";
+  if (rawExisting && parsed.requestedEngine && existingEngine !== parsed.requestedEngine) {
     throw new Error(
-      `Switching container engine on an existing installation is not supported (existing engine is ${rawExisting.engine}, requested ${parsed.requestedEngine}). ` +
+      `Switching container engine on an existing installation is not supported (existing engine is ${existingEngine}, requested ${parsed.requestedEngine}). ` +
       `To switch engines, back up your data with "${UNIVERSAL_COMMAND} backup", run "${UNIVERSAL_COMMAND} uninstall --purge-data", and reinstall with "--engine ${parsed.requestedEngine}".`
     );
   }
@@ -1231,7 +1232,7 @@ async function planInteractiveSetup({
     }
     await applyApprovedConfigRepairs(root, rawExisting);
     const config = await loadExistingInstallation(root);
-    const code = await repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, ensureDocker, env, arch, inspectResources });
+    const code = await repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, ensureDocker, ensurePodman, env, arch, inspectResources });
     if(code === 0 && !parsed.noOpen) await openBrowser(`http://${config.bindHost}:${config.port}`, platform, execute, {stdin,stdout,stderr});
     return {exit:code};
   }
@@ -1301,7 +1302,7 @@ function hasRequestedConfigChange(rawExisting, parsed) {
   }
   if (
     parsed.requestedEngine !== undefined &&
-    rawExisting.engine !== parsed.requestedEngine
+    (rawExisting.engine ?? "docker") !== parsed.requestedEngine
   ) {
     return true;
   }
@@ -1354,7 +1355,7 @@ async function offerUnattendedContinuation(root, runtimeVersion, stdin, stdout, 
   }
 }
 
-async function repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, dryRun = false, ensureDocker = ensureDockerAvailable, env = process.env, arch = process.arch, inspectResources = inspectSystemResources }) {
+async function repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, dryRun = false, ensureDocker = ensureDockerAvailable, ensurePodman = ensurePodmanAvailable, env = process.env, arch = process.arch, inspectResources = inspectSystemResources }) {
   const raw = await readRawConfig(root);
   const plan = planConfigRepairs(raw);
   if (dryRun) {
@@ -1368,7 +1369,7 @@ async function repairRuntime({ root, config, platform, stdin, stdout, stderr, ex
     ...plan.actions.map((action) => action.detail)
   ])) return 1;
   const prerequisites = repaired.engine === "podman"
-    ? await ensurePodmanAvailable({ platform, arch, env, stdin, stdout, stderr, execute, sleep: sleep || wait, profile: repaired.profile })
+    ? await ensurePodman({ platform, arch, env, stdin, stdout, stderr, execute, sleep: sleep || wait, profile: repaired.profile })
     : await ensureDocker({platform, arch, env, stdin, stdout, stderr, execute, sleep: sleep || wait,
         installArgs: {root,requestedProfile:repaired.profile,requestedAccessMode:repaired.accessMode,noOpen:true,autoConfirm:true}});
   if(prerequisites.reexecuted || prerequisites.code !== 0) return prerequisites.code;
@@ -2145,7 +2146,7 @@ async function factoryResetCommand({
   return 0;
 }
 
-async function updateCommand(args, { root, config, version, platform, stdin, stdout, stderr, execute, request, sleep, inspectResources = inspectSystemResources, ensureDocker = ensureDockerAvailable, env = process.env, arch = process.arch }) {
+async function updateCommand(args, { root, config, version, platform, stdin, stdout, stderr, execute, request, sleep, inspectResources = inspectSystemResources, ensureDocker = ensureDockerAvailable, ensurePodman = ensurePodmanAvailable, env = process.env, arch = process.arch }) {
   if (args.length > 1) {
     throw new Error(`Usage: ${UNIVERSAL_COMMAND} update [version]`);
   }
@@ -2179,7 +2180,7 @@ async function updateCommand(args, { root, config, version, platform, stdin, std
         return doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources: inspectSystemResources, engine: config.engine });
       }
     }
-    return repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, inspectResources, ensureDocker, env, arch });
+    return repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, inspectResources, ensureDocker, ensurePodman, env, arch });
   }
   if (path === "downgrade") {
     if (!continuation) {
@@ -2219,7 +2220,7 @@ async function updateCommand(args, { root, config, version, platform, stdin, std
     }
   }
   const prerequisites = config.engine === "podman"
-    ? await ensurePodmanAvailable({ platform, arch, env, stdin, stdout, stderr, execute, sleep: sleep || wait, profile: config.profile })
+    ? await ensurePodman({ platform, arch, env, stdin, stdout, stderr, execute, sleep: sleep || wait, profile: config.profile })
     : await ensureDocker({ platform, arch, env, stdin, stdout, stderr, execute,
         installArgs: { root, requestedProfile: config.profile, noOpen: true, autoConfirm: true } });
   if (prerequisites.reexecuted || prerequisites.code !== 0) return prerequisites.code;

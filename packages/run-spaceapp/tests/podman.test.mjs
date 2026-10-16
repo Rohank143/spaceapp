@@ -486,13 +486,14 @@ test("factory-reset preserves configured engine: podman", async () => {
         resume() {},
         pause() {},
         [Symbol.asyncIterator]: async function* () {
-          yield "RESET\n";
+          yield "FACTORY-RESET\n";
         }
       },
       execute: async () => 0
     });
 
     assert.equal(code, 0);
+    assert.match(out, /factory reset complete/);
     const resetConfig = await loadConfig(root);
     assert.equal(resetConfig.engine, "podman", "factory-reset must preserve podman engine");
   } finally {

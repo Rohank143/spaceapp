@@ -59,8 +59,10 @@ checkpoint and 0.5 GiB headroom. Cached target images require no extra image spa
 Shared layers are excluded when public registry metadata is available; otherwise
 a conservative estimate is shown. Space is checked again after pulling and
 before pausing writers. Existing data is kept in place; the launcher never deletes
-images, backups or volumes to free space. Separate Docker disk capacity is checked
-### Container Engines: Docker and Rootless Podman
+images, backups or volumes to free space. Separate container engine disk capacity is
+checked when measurable, and its availability is reported.
+
+## Container Engines: Docker and Rootless Podman
 
 SpaceApp supports both **Docker** (default) and **rootless Podman** on Linux and macOS.
 
