@@ -654,7 +654,14 @@ async function installCommand(args, {
     telemetryEnabled
   } = wizard;
   const existingConfig = await loadExistingInstallation(root);
-  let engine = existingConfig?.engine ?? requestedEngine ?? "docker";
+  const existingEngine = existingConfig ? (existingConfig.engine ?? "docker") : undefined;
+  if (existingEngine !== undefined && requestedEngine !== undefined && existingEngine !== requestedEngine) {
+    throw new Error(
+      `Switching container engine on an existing installation is not supported (existing engine is ${existingEngine}, requested ${requestedEngine}). ` +
+      `To switch engines, back up your data with "${UNIVERSAL_COMMAND} backup", run "${UNIVERSAL_COMMAND} uninstall --purge-data", and reinstall with "--engine ${requestedEngine}".`
+    );
+  }
+  let engine = existingEngine ?? requestedEngine ?? "docker";
   const accessMode = resolveInstallAccessMode(
     requestedAccessMode,
     existingConfig?.accessMode ?? "isolated"

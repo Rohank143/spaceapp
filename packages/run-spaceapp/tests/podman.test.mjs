@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -148,6 +148,22 @@ test("prepareInstallation persists engine and validates safety guards", async ()
         engine: "docker"
       }),
       /Switching container engine on an existing installation is not supported/
+    );
+
+    // Also rejects switching when existing config has no engine property (legacy Docker install)
+    const legacyConfigPath = join(root, "config.json");
+    const currentConfig = JSON.parse(await readFile(legacyConfigPath, "utf8"));
+    delete currentConfig.engine;
+    await writeFile(legacyConfigPath, JSON.stringify(currentConfig, null, 2), "utf8");
+
+    await assert.rejects(
+      prepareInstallation(root, {
+        version: "1.1.5",
+        profile: "small",
+        accessMode: "isolated",
+        engine: "podman"
+      }),
+      /Switching container engine on an existing installation is not supported \(existing engine is docker, requested podman\)/
     );
   } finally {
     await rm(root, { recursive: true, force: true });

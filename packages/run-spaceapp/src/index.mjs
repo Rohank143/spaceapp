@@ -829,9 +829,10 @@ export async function prepareInstallation(root, {
   let config;
   try {
     config = await loadConfig(root);
-    if (engine !== undefined && config.engine && config.engine !== engine) {
+    const existingEngine = config.engine ?? "docker";
+    if (engine !== undefined && existingEngine !== engine) {
       throw new Error(
-        `Switching container engine on an existing installation is not supported (existing engine is ${config.engine}, requested ${engine}). ` +
+        `Switching container engine on an existing installation is not supported (existing engine is ${existingEngine}, requested ${engine}). ` +
         `To switch engines, back up your data with "${UNIVERSAL_COMMAND} backup", run "${UNIVERSAL_COMMAND} uninstall --purge-data", and reinstall with "--engine ${engine}".`
       );
     }
