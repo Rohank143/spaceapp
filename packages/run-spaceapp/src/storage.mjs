@@ -1,7 +1,8 @@
 import { Writable } from "node:stream";
-import { readdir, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { composeCommand, profileRuntimeSettings, PROFILE_REQUIREMENTS } from "./index.mjs";
+import { localImageRefs } from "./image-lock.mjs";
 
 const GiB = 1024 ** 3;
 const MiB = 1024 ** 2;
@@ -84,6 +85,16 @@ async function registryLayers(image, arch, fetch) {
   return { layers: manifest.layers, diffIds: config.rootfs?.diff_ids };
 }
 
+// The digests the existing installation pinned (its runtime.env), so its by-digest images count as cached.
+async function installedImageDigests(root, version) {
+  let text = "";
+  try { text = await readFile(join(root, "runtime.env"), "utf8"); } catch { return {}; }
+  if (!text.split("\n").includes(`SPACEAPP_IMAGE_TAG=${version}`)) return {};
+  const digests = {};
+  for (const [, type, digest] of text.matchAll(/^SPACEAPP_(CORE|CLI|BROWSER)_IMAGE_DIGEST=@(sha256:[a-f0-9]{64})$/gm)) digests[type.toLowerCase()] = digest;
+  return digests;
+}
+
 export async function inspectStoragePlan({ root, config, existingConfig, resources, execute, operation, fetch = globalThis.fetch }) {
   const selectedEngine = config?.engine || existingConfig?.engine || "docker";
   const isPodman = selectedEngine === "podman";
@@ -95,12 +106,13 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
   try { engine = JSON.parse(engineInfo); } catch { /* Conservative reserve when the engine is unavailable. */ }
   const cachedLayers = new Set();
   if (engine && existingConfig) {
+    const existingDigests = await installedImageDigests(root, existingConfig.version);
+    const engineCmd = isPodman ? "podman" : "docker";
     for (const type of ["core", "cli", "browser"]) {
-      const inspectSpec = isPodman
-        ? { command: "podman", args: ["image", "inspect", "--format", "{{json .RootFS.Layers}}", `ghcr.io/oll4com/spaceapp-${type}:${existingConfig.version}`] }
-        : { command: "docker", args: ["image", "inspect", "--format", "{{json .RootFS.Layers}}", `ghcr.io/oll4com/spaceapp-${type}:${existingConfig.version}`] };
-      const output = await captureProbe(execute, inspectSpec);
-      try { for (const layer of JSON.parse(output)) cachedLayers.add(layer); } catch {}
+      for (const ref of localImageRefs(type, existingConfig.version, existingDigests[type])) {
+        const output = await captureProbe(execute, { command: engineCmd, args: ["image", "inspect", "--format", "{{json .RootFS.Layers}}", ref] });
+        try { for (const layer of JSON.parse(output)) cachedLayers.add(layer); break; } catch {}
+      }
     }
   }
   const settings = profileRuntimeSettings(config.profile);
@@ -115,11 +127,15 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
   let missingImageBytes = 0;
   const missingImages = [];
   let sharedLayersEstimated = false;
+  const engineCmd = isPodman ? "podman" : "docker";
   for (const [type, image] of images) {
-    const inspectSpec = isPodman
-      ? { command: "podman", args: ["image", "inspect", "--format", "{{.Id}}", image] }
-      : { command: "docker", args: ["image", "inspect", "--format", "{{.Id}}", image] };
-    const cached = await captureProbe(execute, inspectSpec);
+    // SpaceApp images pulled by digest have no local version tag: look them up by their pinned digest as well.
+    const refs = ["core", "cli", "browser"].includes(type) ? localImageRefs(type, config.version) : [image];
+    let cached = null;
+    for (const ref of refs) {
+      cached = await captureProbe(execute, { command: engineCmd, args: ["image", "inspect", "--format", "{{.Id}}", ref] });
+      if (/^sha256:[a-f0-9]{64}$/.test(cached ?? "")) break;
+    }
     if (!/^sha256:[a-f0-9]{64}$/.test(cached ?? "")) {
       missingImages.push(image);
       let reserve = imageReserve[type] ?? GiB;
