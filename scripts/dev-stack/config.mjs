@@ -18,6 +18,12 @@ const portVariables = Object.freeze({
 });
 const reservedPorts = new Set([4910, 4911]);
 
+/**
+ * Resolves dev-stack host ports from environment variables or defaults.
+ *
+ * @param {NodeJS.ProcessEnv} [env=process.env]
+ * @returns {{ web: number, api: number, postgres: number, temporal: number }}
+ */
 export function resolvePorts(env = process.env) {
   const ports = {};
   for (const [name, variable] of Object.entries(portVariables)) {
@@ -36,6 +42,13 @@ export function resolvePorts(env = process.env) {
   return ports;
 }
 
+/**
+ * Resolves the absolute directory path where the dev stack stores runtime state.
+ *
+ * @param {NodeJS.ProcessEnv} [env=process.env]
+ * @param {string} [root=repoRoot]
+ * @returns {string}
+ */
 export function resolveStateDir(env = process.env, root = repoRoot) {
   return resolve(root, env.SPACE_DEV_STATE_DIR?.trim() || ".dev-stack");
 }
@@ -68,20 +81,47 @@ export function serviceImage(composeText, service) {
   throw new Error(`Service ${service} has no image in the compose template.`);
 }
 
+/**
+ * Reads the compose template and returns pinned image digests for postgres and temporal.
+ *
+ * @param {string} [templatePath=composeTemplatePath]
+ * @returns {{ postgres: string, temporal: string }}
+ */
 export function readServiceImages(templatePath = composeTemplatePath) {
   const text = readFileSync(templatePath, "utf8");
   return { postgres: serviceImage(text, "postgres"), temporal: serviceImage(text, "temporal") };
 }
 
-/** The opencode-ai version the published CLI image installs. */
-export function opencodeVersion(dockerfileText) {
-  const match = /\bopencode-ai@(\d+\.\d+\.\d+)\b/.exec(dockerfileText);
-  if (!match) throw new Error("The Dockerfile does not pin an opencode-ai version.");
-  return match[1];
+/**
+ * Extracts OpenCode package details (name, version, spec) from Dockerfile text.
+ *
+ * @param {string} dockerfileText
+ * @returns {{ name: string, version: string, spec: string }}
+ */
+export function opencodePackage(dockerfileText) {
+  const match = /(@opencode\/cli|\bopencode-ai)@(\d+\.\d+\.\d+)\b/.exec(dockerfileText);
+  if (!match) throw new Error("The Dockerfile does not pin an opencode version.");
+  return { name: match[1], version: match[2], spec: `${match[1]}@${match[2]}` };
 }
 
+/**
+ * Extracts OpenCode version string from Dockerfile text.
+ *
+ * @param {string} dockerfileText
+ * @returns {string}
+ */
+export function opencodeVersion(dockerfileText) {
+  return opencodePackage(dockerfileText).version;
+}
+
+/**
+ * Reads OpenCode package details from the repository Dockerfile.
+ *
+ * @param {string} [path=dockerfilePath]
+ * @returns {{ name: string, version: string, spec: string }}
+ */
 export function readOpencodeVersion(path = dockerfilePath) {
-  return opencodeVersion(readFileSync(path, "utf8"));
+  return opencodePackage(readFileSync(path, "utf8"));
 }
 
 /**
@@ -131,6 +171,12 @@ volumes:
 `;
 }
 
+/**
+ * Constructs an object mapping state directory subpaths and file paths.
+ *
+ * @param {string} stateDir
+ * @returns {Record<string, string>}
+ */
 export function statePaths(stateDir) {
   const cli = join(stateDir, "cli");
   return {
@@ -271,6 +317,12 @@ exec bash ${shellQuote(wrapper)} ${shellQuote(runtime)} "$@"
 `;
 }
 
+/**
+ * Escapes and wraps a string for safe use as a POSIX shell literal argument.
+ *
+ * @param {string | number} value
+ * @returns {string}
+ */
 export function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }

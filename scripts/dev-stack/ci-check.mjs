@@ -14,10 +14,23 @@ const base = `http://127.0.0.1:${ports.web}`;
 let cookie = "";
 let csrf = null;
 
+/**
+ * Logs a labeled step message to stdout.
+ *
+ * @param {string} message
+ */
 function step(message) {
   process.stdout.write(`[dev-stack-check] ${message}\n`);
 }
 
+/**
+ * Sends an HTTP request with authentication and CSRF headers.
+ *
+ * @param {string} method
+ * @param {string} path
+ * @param {any} [body]
+ * @returns {Promise<any>}
+ */
 async function request(method, path, body) {
   const headers = { accept: "application/json" };
   if (cookie) headers.cookie = cookie;
@@ -35,6 +48,14 @@ async function request(method, path, body) {
   return json;
 }
 
+/**
+ * Repeatedly polls a probe function until it returns a truthy value or times out.
+ *
+ * @param {string} label
+ * @param {number} timeoutMs
+ * @param {() => Promise<any>} probe
+ * @returns {Promise<any>}
+ */
 async function until(label, timeoutMs, probe) {
   const deadline = Date.now() + timeoutMs;
   let last;

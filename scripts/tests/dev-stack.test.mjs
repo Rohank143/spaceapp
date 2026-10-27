@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   composeTemplatePath, defaultPorts, ensureSecrets, opencodeVersion, packageForChange, readOpencodeVersion,
@@ -10,7 +10,7 @@ import {
   sameProcess, serviceEnvironment, serviceImage, statePaths, verifyProcessIdentity
 } from "../dev-stack/config.mjs";
 
-const template = readFileSync(composeTemplatePath, "utf8");
+const template = readFileSync(composeTemplatePath, "utf8").replace(/\r\n/g, "\n");
 
 test("service images come from the installer compose template, pinned by digest", () => {
   const images = readServiceImages();
@@ -49,8 +49,8 @@ test("ports default away from an installed SpaceApp and can be changed", () => {
 test("the compose project and state directory are the dev stack's own", () => {
   assert.equal(resolveProjectName({}), "spaceapp-devstack");
   assert.throws(() => resolveProjectName({ SPACE_DEV_COMPOSE_PROJECT: "spaceapp" }), /other than spaceapp/);
-  assert.equal(resolveStateDir({}, "/repo"), "/repo/.dev-stack");
-  assert.equal(resolveStateDir({ SPACE_DEV_STATE_DIR: "/tmp/x" }, "/repo"), "/tmp/x");
+  assert.equal(resolveStateDir({}, "/repo"), resolve("/repo", ".dev-stack"));
+  assert.equal(resolveStateDir({ SPACE_DEV_STATE_DIR: "/tmp/x" }, "/repo"), resolve("/tmp/x"));
   assert.match(readFileSync(new URL("../../.gitignore", import.meta.url), "utf8"), /^\.dev-stack\/$/m);
 });
 
@@ -61,14 +61,20 @@ test("secrets are generated once per state directory with mode 0600", async () =
     const first = await ensureSecrets(paths);
     for (const key of ["postgresPassword", "sessionSecret", "setupToken"]) {
       assert.ok(first[key].length >= 32, key);
-      assert.equal((await stat(paths[key])).mode & 0o777, 0o600, key);
+      if (process.platform !== "win32") {
+        assert.equal((await stat(paths[key])).mode & 0o777, 0o600, key);
+      }
     }
-    assert.equal((await stat(paths.secrets)).mode & 0o777, 0o700);
+    if (process.platform !== "win32") {
+      assert.equal((await stat(paths.secrets)).mode & 0o777, 0o700);
+    }
     assert.deepEqual(await ensureSecrets(paths), first);
     await writeFile(paths.setupToken, "", { mode: 0o644 });
     const second = await ensureSecrets(paths);
     assert.notEqual(second.setupToken, first.setupToken);
-    assert.equal((await stat(paths.setupToken)).mode & 0o777, 0o600);
+    if (process.platform !== "win32") {
+      assert.equal((await stat(paths.setupToken)).mode & 0o777, 0o600);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -86,7 +92,7 @@ test("services get the public-distribution environment with state-directory path
   assert.equal(env.SPACE_TEMPORAL_ADDRESS, `127.0.0.1:${defaultPorts.temporal}`);
   assert.equal(env.SPACE_API_HOST, "127.0.0.1");
   assert.equal(env.SPACE_WEB_HOST, "127.0.0.1");
-  assert.equal(env.SPACE_SETUP_TOKEN_FILE, "/state/secrets/setup-token");
+  assert.equal(env.SPACE_SETUP_TOKEN_FILE, join("/state", "secrets", "setup-token"));
   assert.ok(!Object.values(env).includes("t"), "the setup token is passed as a file");
   for (const [name, value] of Object.entries(env)) {
     assert.ok(!String(value).startsWith("/opt/spaceapp") && !String(value).startsWith("/var/lib/spaceapp"), name);
@@ -94,12 +100,13 @@ test("services get the public-distribution environment with state-directory path
 });
 
 test("the OpenCode version is the Dockerfile's pin and its command runs the dev wrapper", () => {
-  assert.match(readOpencodeVersion(), /^\d+\.\d+\.\d+$/);
+  assert.match(readOpencodeVersion().version, /^\d+\.\d+\.\d+$/);
   assert.equal(opencodeVersion("RUN npm install --global opencode-ai@1.2.3 \\"), "1.2.3");
+  assert.equal(opencodeVersion("RUN npm install --global @opencode/cli@2.0.32 \\"), "2.0.32");
   assert.throws(() => opencodeVersion("RUN true"), /does not pin/);
   const command = renderCliCommand({ runtime: "opencode", paths: statePaths("/state it's"), nodePath: "/usr/bin/node" });
-  assert.match(command, /^export SPACE_DEV_CLI_ROOT='\/state it'\\''s\/cli'$/m);
-  assert.match(command, /scripts\/dev-stack\/cli-wrapper\.sh' 'opencode' "\$@"$/m);
+  assert.match(command, /^export SPACE_DEV_CLI_ROOT='[\\/]state it'\\''s[\\/]cli'$/m);
+  assert.match(command, /scripts[\\/]dev-stack[\\/]cli-wrapper\.sh' 'opencode' "\$@"$/m);
 });
 
 test("package source changes map to the package to rebuild", () => {

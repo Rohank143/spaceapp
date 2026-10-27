@@ -42,8 +42,8 @@ jobs:
         working-directory: ${{ runner.temp }}/spaceapp-public-export
         run: npm ci
 
-      - name: Install ripgrep (the file search tests run the real rg)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+      - name: Install ripgrep and ffmpeg (the file search tests run the real rg, the Nous attachment tests make media with ffmpeg)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep ffmpeg
 
       - name: Public release tests
         working-directory: ${{ runner.temp }}/spaceapp-public-export
@@ -106,7 +106,7 @@ jobs:
         run: |
           test -z "$(docker ps -aq --filter label=com.docker.compose.project=spaceapp-devstack)"
           test -z "$(docker volume ls -q --filter label=com.docker.compose.project=spaceapp-devstack)"
-          ! pgrep -f "scripts/dev-stack.mjs|tsx watch|vite --strictPort|cli-host/dist/main.js|apps/worker/dist/worker.js|vendor/opencode"
+          if pgrep -f "scripts/dev-stack.mjs|tsx watch|vite --strictPort|cli-host/dist/main.js|apps/worker/dist/worker.js|vendor/opencode"; then exit 1; fi
           test ! -e .dev-stack
           test -z "$(git status --porcelain)"
 

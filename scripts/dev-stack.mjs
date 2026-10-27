@@ -5,7 +5,7 @@
 // npm run dev:stack -- status  print the state of a running dev stack
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, watch } from "node:fs";
-import { chmod, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -25,6 +25,27 @@ const bin = (name) => join(repoRoot, "node_modules", ".bin", name);
 
 class DevStackError extends Error {}
 
+const stateMarker = ".spaceapp-dev-stack";
+const stateMarkerContents = "spaceapp-dev-stack-v1\n";
+
+/**
+ * Asserts that the state directory contains the stack ownership marker.
+ *
+ * @param {string} stateDir
+ */
+async function assertOwnedStateDir(stateDir) {
+  try {
+    if ((await readFile(join(stateDir, stateMarker), "utf8")) !== stateMarkerContents) throw new Error();
+  } catch {
+    throw new DevStackError(`refusing to reset unowned state directory ${stateDir}`);
+  }
+}
+
+/**
+ * Resolves dev-stack configuration context from environment variables.
+ *
+ * @returns {{ env: NodeJS.ProcessEnv, ports: any, project: string, paths: any }}
+ */
 function context() {
   const env = process.env;
   if (!env.DOCKER_HOST && !existsSync("/var/run/docker.sock")) {
@@ -37,6 +58,14 @@ function context() {
   return { env, ports: resolvePorts(env), project: resolveProjectName(env), paths: statePaths(stateDir) };
 }
 
+/**
+ * Executes a command synchronously and throws DevStackError on failure.
+ *
+ * @param {string} command
+ * @param {string[]} args
+ * @param {import("node:child_process").SpawnSyncOptions} [options={}]
+ * @returns {import("node:child_process").SpawnSyncReturns<any>}
+ */
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { cwd: repoRoot, stdio: "inherit", ...options });
   if (result.error) throw new DevStackError(`${command} could not start: ${result.error.message}`);
@@ -44,6 +73,14 @@ function run(command, args, options = {}) {
   return result;
 }
 
+/**
+ * Executes a Docker Compose command within the dev-stack project.
+ *
+ * @param {{ project: string, paths: any }} ctx
+ * @param {string[]} args
+ * @param {{ password?: string } & import("node:child_process").SpawnSyncOptions} [options={}]
+ * @returns {import("node:child_process").SpawnSyncReturns<any>}
+ */
 function compose({ project, paths }, args, { password = "unused", ...options } = {}) {
   return run("docker", ["compose", "--project-name", project, "--file", paths.compose, ...args], {
     ...options,
@@ -51,11 +88,22 @@ function compose({ project, paths }, args, { password = "unused", ...options } =
   });
 }
 
+/**
+ * Renders and writes the docker compose file into the state directory.
+ *
+ * @param {{ paths: any, ports: any }} ctx
+ */
 async function writeComposeFile(ctx) {
   await mkdir(ctx.paths.stateDir, { recursive: true, mode: 0o700 });
   await writeFile(ctx.paths.compose, renderCompose({ images: readServiceImages(), ports: ctx.ports }), { mode: 0o600 });
 }
 
+/**
+ * Checks whether a process with the given PID is alive.
+ *
+ * @param {number} pid
+ * @returns {boolean}
+ */
 function pidAlive(pid) {
   try {
     process.kill(pid, 0);
@@ -65,6 +113,12 @@ function pidAlive(pid) {
   }
 }
 
+/**
+ * Reads process identity descriptors (/proc/<pid>/stat or ps) for PID recycling detection.
+ *
+ * @param {number} pid
+ * @returns {{ pid: number, comm?: string, starttime?: string, ps?: string } | null}
+ */
 function processIdentity(pid) {
   if (!pidAlive(pid)) return null;
   try {
@@ -86,6 +140,12 @@ function processIdentity(pid) {
   return { pid };
 }
 
+/**
+ * Validates a recorded process identity against live process state.
+ *
+ * @param {number | { pid: number }} recorded
+ * @returns {number | null}
+ */
 function verifyPid(recorded) {
   if (!recorded) return null;
   const pid = typeof recorded === "number" ? recorded : recorded.pid;
@@ -95,6 +155,12 @@ function verifyPid(recorded) {
   return verifyProcessIdentity(recorded, current);
 }
 
+/**
+ * Reads and parses the active stack run.json file, or returns null.
+ *
+ * @param {any} paths
+ * @returns {Promise<any>}
+ */
 async function readRunFile(paths) {
   try {
     return JSON.parse(await readFile(paths.runFile, "utf8"));
@@ -103,6 +169,12 @@ async function readRunFile(paths) {
   }
 }
 
+/**
+ * Tests whether a TCP port is free on 127.0.0.1.
+ *
+ * @param {number} port
+ * @returns {Promise<boolean>}
+ */
 function portFree(port) {
   return new Promise((resolve) => {
     const server = createServer();
@@ -111,6 +183,9 @@ function portFree(port) {
   });
 }
 
+/**
+ * Validates operating system and Docker compose prerequisites.
+ */
 function checkPrerequisites() {
   if (process.platform === "win32") {
     throw new DevStackError("Run the dev stack inside WSL2 (Ubuntu) on Windows; see CONTRIBUTING.md.");
@@ -127,6 +202,11 @@ function checkPrerequisites() {
   }
 }
 
+/**
+ * Ensures Unix domain sockets are functional, falling back to tmpdir if the state filesystem rejects them.
+ *
+ * @param {any} ctx
+ */
 async function ensureSocketSupport(ctx) {
   const { paths, project } = ctx;
   const testPath = join(paths.socketDir, `.test-${process.pid}.sock`);
@@ -152,10 +232,23 @@ async function ensureSocketSupport(ctx) {
   }
 }
 
+/**
+ * Prepares the stack state directory, ownership marker, gitignore, starter memory, and secrets.
+ *
+ * @param {any} ctx
+ * @returns {Promise<any>}
+ */
 async function prepareState(ctx) {
   const { paths } = ctx;
   await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
   await chmod(paths.stateDir, 0o700);
+  const marker = join(paths.stateDir, stateMarker);
+  if (!existsSync(marker) && (await readdir(paths.stateDir)).length > 0) {
+    throw new DevStackError(`state directory is not empty and is not owned by the dev stack: ${paths.stateDir}`);
+  }
+  if (!existsSync(marker)) {
+    await writeFile(marker, stateMarkerContents, { mode: 0o600 });
+  }
   // Ignored by git even when SPACE_DEV_STATE_DIR points somewhere else inside the checkout.
   await writeFile(join(paths.stateDir, ".gitignore"), "*\n");
   for (const directory of stateDirectories(paths)) await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -170,25 +263,33 @@ async function prepareState(ctx) {
   return ensureSecrets(paths);
 }
 
+/**
+ * Installs the pinned OpenCode CLI package and writes the parity launcher wrapper.
+ *
+ * @param {any} paths
+ */
 async function installOpencode(paths) {
-  const version = readOpencodeVersion();
+  const { name, version, spec } = readOpencodeVersion();
   const prefix = join(paths.cliVendor, "opencode");
-  const manifest = join(prefix, "node_modules", "opencode-ai", "package.json");
+  const manifest = join(prefix, "node_modules", name, "package.json");
   let installed = null;
   try {
     installed = JSON.parse(readFileSync(manifest, "utf8")).version;
   } catch { /* not installed yet */ }
   if (installed !== version) {
-    info(`installing opencode-ai@${version} into ${relative(repoRoot, prefix) || prefix}`);
+    info(`installing ${spec} into ${relative(repoRoot, prefix) || prefix}`);
     await mkdir(prefix, { recursive: true, mode: 0o700 });
     await writeFile(join(prefix, "package.json"), `${JSON.stringify({ private: true }, null, 2)}\n`);
-    run("npm", ["install", "--prefix", prefix, "--no-audit", "--no-fund", "--save-exact", `opencode-ai@${version}`]);
+    run("npm", ["install", "--prefix", prefix, "--no-audit", "--no-fund", "--save-exact", spec]);
   }
   const command = join(paths.cliBin, "opencode-vscode-parity");
   await writeFile(command, renderCliCommand({ runtime: "opencode", paths, nodePath: process.execPath }), { mode: 0o700 });
   await chmod(command, 0o700);
 }
 
+/**
+ * Builds all workspace packages in topological dependency order.
+ */
 function buildPackages() {
   info("building workspace packages");
   for (const name of workspacePackages) run("npm", ["run", "build", "--silent", "-w", `@space/${name}`]);
@@ -202,6 +303,14 @@ const launchers = new Map();
 const restarting = new Set();
 let stopping = false;
 
+/**
+ * Pipes lines from a readable stream to a target stream with prefixed colored tags.
+ *
+ * @param {import("node:stream").Readable} stream
+ * @param {string} name
+ * @param {import("node:stream").Writable} target
+ * @param {(line: string) => void} [onLine]
+ */
 function pipeLines(stream, name, target, onLine) {
   const label = paint(name === "api" ? "35" : name === "web" ? "32" : name === "worker" ? "33" : "34", `[${name}]`.padEnd(14));
   createInterface({ input: stream }).on("line", (line) => {
@@ -210,6 +319,15 @@ function pipeLines(stream, name, target, onLine) {
   });
 }
 
+/**
+ * Spawns a supervised child process with standard stream pipes and exit tracking.
+ *
+ * @param {string} name
+ * @param {string} command
+ * @param {string[]} args
+ * @param {{ env: NodeJS.ProcessEnv, cwd?: string, onLine?: (line: string) => void }} options
+ * @returns {import("node:child_process").ChildProcess}
+ */
 function startProcess(name, command, args, { env, cwd = repoRoot, onLine }) {
   launchers.set(name, () => startProcess(name, command, args, { env, cwd, onLine }));
   const child = spawn(command, args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -250,6 +368,9 @@ function restartProcess(name) {
   }, 3_000).unref();
 }
 
+/**
+ * Records live supervisor and child process descriptors into run.json.
+ */
 async function recordChildren() {
   if (!shutdownContext || stopping) return;
   const { paths, ports, project } = shutdownContext;
@@ -268,6 +389,12 @@ async function recordChildren() {
   })}\n`, { mode: 0o600 });
 }
 
+/**
+ * Sends a signal to a process group, falling back to the process PID directly.
+ *
+ * @param {number} pid
+ * @param {string | number} signal
+ */
 function killGroup(pid, signal) {
   try {
     process.kill(-pid, signal);
@@ -276,6 +403,9 @@ function killGroup(pid, signal) {
   }
 }
 
+/**
+ * Stops all child processes by SIGTERM then SIGKILL.
+ */
 async function stopChildren() {
   const running = [...children.values()];
   for (const child of running) killGroup(child.pid, "SIGTERM");
@@ -285,6 +415,12 @@ async function stopChildren() {
 }
 
 let shutdownContext = null;
+
+/**
+ * Shuts down all supervised children and Compose containers, then exits.
+ *
+ * @param {number} code
+ */
 async function shutdown(code) {
   if (stopping) return;
   stopping = true;
@@ -302,11 +438,24 @@ async function shutdown(code) {
   process.exit(code);
 }
 
+/**
+ * Performs an HTTP GET request and parses the JSON response body.
+ *
+ * @param {string} url
+ * @param {number} [timeoutMs=5000]
+ * @returns {Promise<{ status: number, body: any }>}
+ */
 async function fetchJson(url, timeoutMs = 5000) {
   const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   return { status: response.status, body: await response.json().catch(() => null) };
 }
 
+/**
+ * Summarizes failing checks from a /readyz JSON response body.
+ *
+ * @param {any} body
+ * @returns {string}
+ */
 function describeReadiness(body) {
   if (!body || typeof body !== "object") return "no readiness report";
   const failing = Object.entries(body.checks ?? {})
@@ -315,6 +464,13 @@ function describeReadiness(body) {
   return failing.length > 0 ? failing.join("; ") : JSON.stringify(body).slice(0, 400);
 }
 
+/**
+ * Polls a readiness URL until it returns 200 with ok: true, or times out.
+ *
+ * @param {string} url
+ * @param {number} timeoutMs
+ * @returns {Promise<any>}
+ */
 async function waitForReady(url, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let last = null;
@@ -329,6 +485,11 @@ async function waitForReady(url, timeoutMs) {
   throw new DevStackError(`SpaceApp did not become ready within ${Math.round(timeoutMs / 1000)} s (${describeReadiness(last?.body)}).`);
 }
 
+/**
+ * Continuously monitors /readyz in the background and reports health transitions.
+ *
+ * @param {string} url
+ */
 function monitorReadiness(url) {
   let healthy = true;
   const timer = setInterval(async () => {
@@ -398,6 +559,11 @@ function watchWorkerBuild() {
   });
 }
 
+/**
+ * Starts the complete SpaceApp stack from source (Compose, migrations, API, web, worker, and CLI host).
+ *
+ * @param {any} ctx
+ */
 async function up(ctx) {
   checkPrerequisites();
   const previous = await readRunFile(ctx.paths);
@@ -495,6 +661,12 @@ async function up(ctx) {
   monitorReadiness(readyUrl);
 }
 
+/**
+ * Stops a running dev stack, verifying process identities before signaling PIDs.
+ *
+ * @param {any} ctx
+ * @param {{ quiet?: boolean }} [options={}]
+ */
 async function down(ctx, { quiet = false } = {}) {
   const state = await readRunFile(ctx.paths);
   const supervisorPid = state?.supervisor ? verifyPid(state.supervisor) : verifyPid(state?.pid);
@@ -525,8 +697,16 @@ async function down(ctx, { quiet = false } = {}) {
   if (!quiet) info("dev stack stopped");
 }
 
+/**
+ * Resets the dev stack: stops processes, removes compose containers and volumes, and purges state directory.
+ *
+ * @param {any} ctx
+ */
 async function reset(ctx) {
   checkPrerequisites();
+  if (existsSync(ctx.paths.stateDir)) {
+    await assertOwnedStateDir(ctx.paths.stateDir);
+  }
   await down(ctx, { quiet: true });
   await writeComposeFile(ctx);
   info(`removing containers and volumes of compose project ${ctx.project}`);
@@ -540,6 +720,11 @@ async function reset(ctx) {
   info("dev stack reset");
 }
 
+/**
+ * Prints current execution and container status of the dev stack.
+ *
+ * @param {any} ctx
+ */
 async function status(ctx) {
   const state = await readRunFile(ctx.paths);
   const livePid = state?.supervisor ? verifyPid(state.supervisor) : verifyPid(state?.pid);
