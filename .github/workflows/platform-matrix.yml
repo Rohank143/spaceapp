@@ -104,10 +104,9 @@ jobs:
         run: |
           export SPACEAPP_HOME="$RUNNER_TEMP/spaceapp-podman-validate"
           node --input-type=module -e '
-            import { prepareInstallation, writeRuntimeFiles } from "./packages/run-spaceapp/src/index.mjs";
+            import { initializeInstallation } from "./packages/run-spaceapp/src/index.mjs";
             const root = process.env.SPACEAPP_HOME;
-            const res = await prepareInstallation(root, { version: "0.2.5", profile: "small", engine: "podman", accessMode: "isolated" });
-            await writeRuntimeFiles(root, res.config);
+            await initializeInstallation(root, { version: "0.2.5", profile: "small", engine: "podman", accessMode: "isolated" });
           '
           podman compose -f "$SPACEAPP_HOME/compose.yml" -f "$SPACEAPP_HOME/compose.podman.yml" config
 

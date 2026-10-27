@@ -789,7 +789,9 @@ export async function checkPodmanMachineResources(optsOrExecute, maybeProfile = 
   
   let diskBytes = null;
   if (machine?.Resources?.DiskSize) {
-    diskBytes = Number(machine.Resources.DiskSize);
+    const raw = Number(machine.Resources.DiskSize);
+    // Podman 5 reports GiB; Podman 4 reported bytes.
+    diskBytes = raw > 1_000_000 ? raw : raw * 1024 ** 3;
   }
   if (!diskBytes) {
     const listOutput = await captureProbe(execute, {
@@ -815,8 +817,9 @@ export async function checkPodmanMachineResources(optsOrExecute, maybeProfile = 
   }
 
   const actualCpus = machine?.Resources?.CPUs ?? infoHost?.cpus ?? 0;
-  const actualMemoryBytes = machine?.Resources?.Memory
-    ? machine.Resources.Memory * 1024 * 1024
+  const rawMemory = machine?.Resources?.Memory ? Number(machine.Resources.Memory) : null;
+  const actualMemoryBytes = rawMemory !== null
+    ? (rawMemory > 1_000_000 ? rawMemory : rawMemory * 1024 * 1024)
     : (infoHost?.memTotal ?? 0);
   const actualDiskBytes = diskBytes ?? 0;
 

@@ -87,7 +87,7 @@ Or pass `{"engine": "podman"}` in `--answers`. If Docker is not installed and ro
   ```
 - **SELinux & User Namespaces**: The launcher automatically applies `userns_mode: "keep-id:uid=10001,gid=10001"` and SELinux `:z` volume relabeling on Podman so container services run with proper permissions under non-root user namespaces.
 - **Access mode**: Podman runs strictly in `isolated` mode. `--access host-root` is exclusive to Docker on Linux and is blocked on Podman.
-- **Engine persistence**: Once installed, the configured engine is stored in `config.json` and preserved across `update`, `repair`, and `factory-reset`. Switching engines on an existing installation requires a clean reinstall (after backing up data with `spaceapp backup`).
+- **Engine persistence**: Once installed, the configured engine is stored in `config.json` and preserved across `update`, `repair`, and `factory-reset`. Switching engines on an existing installation requires a complete migration: back up user data and configuration (`spaceapp backup`), run `spaceapp uninstall --purge-data`, clear or delete the retained `config.json` so it no longer selects the previous engine, and then install with the new engine (note that `--purge-data` deletes volumes but intentionally retains `config.json`).
 
 ### Telemetry
 

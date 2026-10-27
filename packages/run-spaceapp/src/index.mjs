@@ -712,7 +712,11 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...(isPodman ? [
+      "        bind:",
+      '          selinux: "z"'
+    ] : [])
   ];
   const userServices = users.flatMap((user) => {
     const slug = userSlug(user.id);
@@ -722,6 +726,7 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
       "    image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}${SPACEAPP_CLI_IMAGE_DIGEST:-}",
       "    restart: unless-stopped",
       "    init: true",
+      ...(isPodman ? ['    userns_mode: "keep-id:uid=10001,gid=10001"'] : []),
       "    security_opt:",
       "      - no-new-privileges:true",
       ...(cliSandbox ? CLI_SANDBOX_OPTIONS.slice(1) : []),
@@ -736,7 +741,7 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
       `      - spaceapp-memory-${slug}:/var/lib/spaceapp/memory`,
       `      - spaceapp-cli-socket-${slug}:/run/spaceapp-cli`,
       `      - spaceapp-workspaces-${slug}:/workspaces`,
-      `      - ./secrets/users/${slug}/providers:/run/spaceapp-secrets/providers:ro`,
+      `      - ./secrets/users/${slug}/providers:/run/spaceapp-secrets/providers:ro${isPodman ? ",z" : ""}`,
       ...user.workspaces.flatMap(bind),
       // Its own network: internet only, never the owner's internal services (temporal, companions) or other users.
       "    networks:",

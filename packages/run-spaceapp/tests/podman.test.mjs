@@ -178,7 +178,7 @@ test("checkPodmanMachineResources validates resources and prevents shrinking dis
         Resources: {
           CPUs: 2,
           Memory: 4096,
-          DiskSize: 5 * 1024 ** 3
+          DiskSize: 5
         }
       }));
       return 0;
@@ -199,7 +199,7 @@ test("checkPodmanMachineResources validates resources and prevents shrinking dis
         Resources: {
           CPUs: 4,
           Memory: 8192,
-          DiskSize: 30 * 1024 ** 3
+          DiskSize: 30
         }
       }));
       return 0;
@@ -475,6 +475,7 @@ test("factory-reset preserves configured engine: podman", async () => {
     await writeRuntimeFiles(root, res.config);
 
     let out = "";
+    const executedSpecs = [];
     const code = await run(["factory-reset"], {
       env: { SPACEAPP_HOME: root },
       platform: "linux",
@@ -489,13 +490,108 @@ test("factory-reset preserves configured engine: podman", async () => {
           yield "FACTORY-RESET\n";
         }
       },
-      execute: async () => 0
+      execute: async (spec) => {
+        executedSpecs.push(spec);
+        return 0;
+      }
     });
 
     assert.equal(code, 0);
     assert.match(out, /factory reset complete/);
     const resetConfig = await loadConfig(root);
     assert.equal(resetConfig.engine, "podman", "factory-reset must preserve podman engine");
+    const backupCmd = executedSpecs.find((s) => s.args?.includes("scripts/portable-backup.mjs"));
+    assert.ok(backupCmd, "backup must be executed during factory-reset");
+    assert.equal(backupCmd.command, "podman", "backup action must use podman");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("backup command with engine: podman executes podman compose across pause, backup, and unpause", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-podman-backup-"));
+  try {
+    const res = await prepareInstallation(root, {
+      version: "1.1.5",
+      profile: "small",
+      accessMode: "isolated",
+      engine: "podman"
+    });
+    await commitInstallation(root, res.config);
+    await writeRuntimeFiles(root, res.config);
+
+    const executed = [];
+    const code = await run(["backup"], {
+      env: { SPACEAPP_HOME: root },
+      platform: "linux",
+      stdout: { write() {} },
+      stderr: { write() {} },
+      execute: async (spec) => {
+        executed.push(spec);
+        return 0;
+      }
+    });
+
+    assert.equal(code, 0);
+    const pauseCmd = executed.find((s) => s.args?.includes("pause"));
+    const backupCmd = executed.find((s) => s.args?.includes("scripts/portable-backup.mjs"));
+    const unpauseCmd = executed.find((s) => s.args?.includes("unpause"));
+    assert.ok(pauseCmd, "pauseWriters must be called");
+    assert.equal(pauseCmd.command, "podman");
+    assert.ok(backupCmd, "backup must be called");
+    assert.equal(backupCmd.command, "podman");
+    assert.ok(unpauseCmd, "unpauseWriters must be called");
+    assert.equal(unpauseCmd.command, "podman");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("renderWorkspaceCompose applies Podman options to multi-user CLI services", () => {
+  const multiUserConfig = {
+    ...podmanConfig,
+    users: [
+      {
+        id: "user:alice",
+        workspaces: [
+          {
+            id: "ws-alice-12345678",
+            name: "ws",
+            hostPath: "/home/alice/ws",
+            containerPath: "/workspaces/ws",
+            readOnly: false
+          }
+        ]
+      }
+    ]
+  };
+  const yaml = renderWorkspaceCompose(multiUserConfig);
+  assert.match(yaml, /spaceapp-cli-alice-[a-f0-9]{6}:/);
+  assert.match(yaml, /userns_mode: "keep-id:uid=10001,gid=10001"/);
+  assert.match(yaml, /selinux: "z"/);
+  assert.match(yaml, /secrets\/users\/alice-[a-f0-9]{6}\/providers:\/run\/spaceapp-secrets\/providers:ro,z/);
+});
+
+test("install with --answers specifying engine: podman and access: host-root rejects", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-podman-hostroot-"));
+  try {
+    await assert.rejects(
+      run(["install", "--no-open", "--non-interactive", "--answers", JSON.stringify({
+        confirm: true,
+        engine: "podman",
+        access: "host-root",
+        profile: "small",
+        telemetry: false
+      })], {
+        env: { SPACEAPP_HOME: root },
+        platform: "linux",
+        stdout: { write() {} },
+        stderr: { write() {} },
+        inspectResources: async () => ({ cpuCount: 4, totalMemoryBytes: 8 * 1024 ** 3, freeDiskBytes: 20 * 1024 ** 3 }),
+        execute: async () => 0
+      }),
+      /Podman rootless engine does not support --access host-root/
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
